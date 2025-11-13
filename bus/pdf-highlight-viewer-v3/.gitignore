@@ -1,0 +1,72 @@
+# Node / Vite / React standard ignores
+
+# Dependencies
+node_modules/
+
+# Build output
+/dist/
+/build/
+
+# Caches and temp
+.vite/
+.vitest/
+.eslintcache
+.stylelintcache
+.turbo/
+.parcel-cache/
+.cache/
+.tmp/
+tmp/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+vite-error.log
+
+# Tests & coverage
+coverage/
+.nyc_output/
+
+# Env files (keep .env.example in repo)
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Hosting/platform
+.vercel/
+.netlify/
+
+# Package archives
+*.tgz
+
+# dependencies
+node_modules/
+
+# build
+dist/
+*.log
+
+# system
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+
+# env
+.env*
+!.env.example
