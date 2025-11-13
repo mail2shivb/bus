@@ -1,0 +1,13 @@
+server:
+  port: 8080
+
+app:
+  pdf:
+    base-path: "./pdfs"
+  search:
+    parallelism: 0
+
+spring:
+  mvc:
+    problemdetails:
+      enabled: true
