@@ -345,6 +345,19 @@ All dependencies use permissive licenses (MIT or Apache 2.0):
 - **TypeScript** (Apache 2.0): Type safety
 - **Vite** (MIT): Build tool
 
+### Security Notice
+
+⚠️ **Important:** The current version uses `pdfjs-dist@3.11.174` which has a known high-severity vulnerability (arbitrary JavaScript execution with malicious PDFs). This is due to compatibility constraints with `@react-pdf-viewer/core`.
+
+**This viewer should only be used with trusted PDF sources.**
+
+See [SECURITY.md](./SECURITY.md) for detailed information about:
+- The vulnerability and its impact
+- Why we cannot currently upgrade
+- Mitigation strategies
+- Recommended deployment configuration
+- Security best practices
+
 ## Contributing
 
 When extending this viewer:
