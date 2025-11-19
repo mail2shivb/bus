@@ -17,19 +17,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
   const [rects, setRects] = useState<HighlightRect[]>([]);
 
-  // === NEW: autoscale + zoom ===
+  // === fit-width autoscale ===
   const containerRef = useRef<HTMLDivElement | null>(null);
   const basePageWidthRef = useRef<number | null>(null);
-  const [autoScale, setAutoScale] = useState(1);  // fits panel
-  const [zoomFactor, setZoomFactor] = useState(1); // user zoom
-  const scale = autoScale * zoomFactor;
+  const [autoScale, setAutoScale] = useState(1); // used for canvas rendering
+
+  // === user zoom (5% steps) ===
+  const [zoomPercent, setZoomPercent] = useState(100); // 100 = 100%
+  const zoomFactor = zoomPercent / 100;
 
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // fetch only if new file
+  /* ---------- load PDF when file changes ---------- */
   useEffect(() => {
     if (!fileName) return;
-    if (loadedFile === fileName && pdfDoc) return; // cached
+    if (loadedFile === fileName && pdfDoc) return; // already loaded
 
     let cancelled = false;
 
@@ -48,7 +50,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [fileName]);
 
-  // === NEW: compute base width and autoscale on container resize ===
+  /* ---------- compute base width + autoscale on resize ---------- */
   useEffect(() => {
     if (!pdfDoc || !containerRef.current) return;
 
@@ -93,23 +95,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc]);
 
-  // === OPTIONAL: keyboard shortcuts like Acrobat (Ctrl + / Ctrl -) ===
+  /* ---------- (optional) keyboard zoom shortcuts ---------- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey) return;
-
       if (e.key === "+" || e.key === "=") {
-        setZoomFactor((z) => Math.min(3, +(z + 0.25).toFixed(2)));
+        setZoomPercent((p) => Math.min(300, p + 5)); // +5%
       } else if (e.key === "-" || e.key === "_") {
-        setZoomFactor((z) => Math.max(0.5, +(z - 0.25).toFixed(2)));
+        setZoomPercent((p) => Math.max(25, p - 5)); // -5%, min 25%
       }
     };
-
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // build highlight rects
+  /* ---------- build highlight rects ---------- */
   useEffect(() => {
     if (!pdfDoc || !citation || citation.fileName !== fileName) return;
     let cancel = false;
@@ -121,7 +121,11 @@ export default function PdfViewer({ fileName, citation }: Props) {
       const chars: CharBox[] = await buildCharMap(pdfDoc, idx);
       if (cancel) return;
 
-      const mRects = rectsForRange(chars, citation.offsetStart, citation.offsetEnd);
+      const mRects = rectsForRange(
+        chars,
+        citation.offsetStart,
+        citation.offsetEnd
+      );
       setRects(
         mRects.map((r, x) => ({ ...r, id: citation.id + ":" + x }))
       );
@@ -132,7 +136,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, citation, fileName]);
 
-  // scroll to page
+  /* ---------- scroll to citation page ---------- */
   useEffect(() => {
     if (!citation || !rects.length) return;
     const idx = citation.pageNumber - 1;
@@ -140,6 +144,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [citation, rects]);
+
+  const displayScale = autoScale * zoomFactor; // for showing 100%, 105%, etc.
 
   return (
     <div
@@ -151,7 +157,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         scrollBehavior: "smooth",
       }}
     >
-      {/* Zoom toolbar – Acrobat style */}
+      {/* Zoom toolbar */}
       <div
         className="flex justify-end items-center gap-2 mb-2"
         style={{ position: "sticky", top: 0, zIndex: 10, background: "white" }}
@@ -159,7 +165,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         <button
           type="button"
           onClick={() =>
-            setZoomFactor((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))
+            setZoomPercent((p) => Math.max(25, p - 5)) // step by 5%
           }
           title="Zoom out (Ctrl + '-')"
           className="border rounded px-2 py-1 text-sm"
@@ -168,16 +174,16 @@ export default function PdfViewer({ fileName, citation }: Props) {
         </button>
 
         <div
-          title={`${Math.round(scale * 100)}%`} // Acrobat-style tooltip
+          title={`${Math.round(displayScale * 100)}%`}
           className="border rounded px-2 py-1 text-xs bg-white/80"
         >
-          {Math.round(scale * 100)}%
+          {Math.round(displayScale * 100)}%
         </div>
 
         <button
           type="button"
           onClick={() =>
-            setZoomFactor((z) => Math.min(3, +(z + 0.25).toFixed(2)))
+            setZoomPercent((p) => Math.min(300, p + 5)) // step by 5%
           }
           title="Zoom in (Ctrl + '+')"
           className="border rounded px-2 py-1 text-sm"
@@ -192,7 +198,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
               key={p}
               pdfDoc={pdfDoc}
               pageNumber={p}
-              scale={scale}
+              renderScale={autoScale}
+              zoom={zoomFactor}
               rects={rects.filter((r) => r.pageIndex === p - 1)}
               refEl={(el) => (pageRefs.current[p - 1] = el)}
             />
@@ -202,23 +209,26 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---- PageView stays almost the same, just consumes `scale` ---- */
+/* ---------------- PageView ---------------- */
 
 function PageView({
   pdfDoc,
   pageNumber,
-  scale,
+  renderScale,
+  zoom,
   rects,
   refEl,
 }: {
   pdfDoc: any;
   pageNumber: number;
-  scale: number;
+  renderScale: number;
+  zoom: number;
   rects: HighlightRect[];
   refEl: (el: HTMLDivElement | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // render pdf page ONLY when doc or renderScale changes
   useEffect(() => {
     let cancel = false;
 
@@ -226,7 +236,7 @@ function PageView({
       const page = await pdfDoc.getPage(pageNumber);
       if (cancel) return;
 
-      const viewport = page.getViewport({ scale });
+      const viewport = page.getViewport({ scale: renderScale });
       const canvas = canvasRef.current;
       if (!canvas) return;
 
@@ -242,21 +252,27 @@ function PageView({
     return () => {
       cancel = true;
     };
-  }, [pdfDoc, pageNumber, scale]);
+  }, [pdfDoc, pageNumber, renderScale]);
 
+  // highlight positions in "renderScale" space
   return (
     <div
       ref={refEl}
-      style={{ position: "relative", margin: "20px auto", width: "fit-content" }}
+      style={{
+        position: "relative",
+        margin: "20px auto",
+        width: "fit-content",
+        transform: `scale(${zoom})`,
+        transformOrigin: "top center",
+      }}
     >
       <canvas ref={canvasRef} />
 
-      {/* highlights */}
       {rects.map((r) => {
-        const left = r.x * scale;
-        const top = r.y * scale;
-        const width = r.width * scale;
-        const height = r.height * scale;
+        const left = r.x * renderScale;
+        const top = r.y * renderScale;
+        const width = r.width * renderScale;
+        const height = r.height * renderScale;
 
         return (
           <div
