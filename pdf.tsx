@@ -17,21 +17,20 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
   const [rects, setRects] = useState<HighlightRect[]>([]);
 
-  // === fit-width autoscale ===
+  // ---------- NEW: zoom ----------
+  const [zoomPercent, setZoomPercent] = useState(100); // 100% by default
+  const zoom = zoomPercent / 100;
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const basePageWidthRef = useRef<number | null>(null);
-  const [autoScale, setAutoScale] = useState(1); // used for canvas rendering
-
-  // === user zoom (5% steps) ===
-  const [zoomPercent, setZoomPercent] = useState(100); // 100 = 100%
-  const zoomFactor = zoomPercent / 100;
+  const [pageBaseWidth, setPageBaseWidth] = useState<number | null>(null); // width of page at base scale
 
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  /* ---------- load PDF when file changes ---------- */
+  const baseScale = 1; // pdfjs render scale – keep fixed for performance
+
+  // fetch only if new file
   useEffect(() => {
     if (!fileName) return;
-    if (loadedFile === fileName && pdfDoc) return; // already loaded
+    if (loadedFile === fileName && pdfDoc) return; // cached
 
     let cancelled = false;
 
@@ -50,66 +49,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [fileName]);
 
-  /* ---------- compute base width + autoscale on resize ---------- */
-  useEffect(() => {
-    if (!pdfDoc || !containerRef.current) return;
-
-    let cancelled = false;
-    let resizeObserver: ResizeObserver | null = null;
-    let handler: (() => void) | null = null;
-
-    const setup = async () => {
-      const firstPage = await pdfDoc.getPage(1);
-      if (cancelled) return;
-
-      const viewport = firstPage.getViewport({ scale: 1 });
-      basePageWidthRef.current = viewport.width;
-
-      handler = () => {
-        if (!containerRef.current || basePageWidthRef.current == null) return;
-        const width = containerRef.current.clientWidth;
-        if (!width) return;
-        setAutoScale(width / basePageWidthRef.current);
-      };
-
-      handler(); // initial fit
-
-      if (typeof ResizeObserver !== "undefined") {
-        resizeObserver = new ResizeObserver(() => handler && handler());
-        resizeObserver.observe(containerRef.current);
-      } else {
-        window.addEventListener("resize", handler);
-      }
-    };
-
-    setup();
-
-    return () => {
-      cancelled = true;
-      if (resizeObserver && containerRef.current) {
-        resizeObserver.disconnect();
-      }
-      if (handler) {
-        window.removeEventListener("resize", handler);
-      }
-    };
-  }, [pdfDoc]);
-
-  /* ---------- (optional) keyboard zoom shortcuts ---------- */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey) return;
-      if (e.key === "+" || e.key === "=") {
-        setZoomPercent((p) => Math.min(300, p + 5)); // +5%
-      } else if (e.key === "-" || e.key === "_") {
-        setZoomPercent((p) => Math.max(25, p - 5)); // -5%, min 25%
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  /* ---------- build highlight rects ---------- */
+  // build highlight rects (unchanged)
   useEffect(() => {
     if (!pdfDoc || !citation || citation.fileName !== fileName) return;
     let cancel = false;
@@ -136,7 +76,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, citation, fileName]);
 
-  /* ---------- scroll to citation page ---------- */
+  // scroll to page (unchanged)
   useEffect(() => {
     if (!citation || !rects.length) return;
     const idx = citation.pageNumber - 1;
@@ -145,7 +85,15 @@ export default function PdfViewer({ fileName, citation }: Props) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [citation, rects]);
 
-  const displayScale = autoScale * zoomFactor; // for showing 100%, 105%, etc.
+  // Fit-to-width button handler (no live autoscale => no laggy divider)
+  const handleFitWidth = () => {
+    if (!containerRef.current || !pageBaseWidth) return;
+    // available width = container width minus padding (20 left + 20 right)
+    const available = containerRef.current.clientWidth - 40;
+    if (available <= 0) return;
+    const neededPercent = (available / pageBaseWidth) * 100;
+    setZoomPercent(Math.round(neededPercent));
+  };
 
   return (
     <div
@@ -157,7 +105,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         scrollBehavior: "smooth",
       }}
     >
-      {/* Zoom toolbar */}
+      {/* Acrobat-ish toolbar */}
       <div
         className="flex justify-end items-center gap-2 mb-2"
         style={{ position: "sticky", top: 0, zIndex: 10, background: "white" }}
@@ -165,7 +113,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         <button
           type="button"
           onClick={() =>
-            setZoomPercent((p) => Math.max(25, p - 5)) // step by 5%
+            setZoomPercent((p) => Math.max(25, p - 5)) // step 5%
           }
           title="Zoom out (Ctrl + '-')"
           className="border rounded px-2 py-1 text-sm"
@@ -174,21 +122,30 @@ export default function PdfViewer({ fileName, citation }: Props) {
         </button>
 
         <div
-          title={`${Math.round(displayScale * 100)}%`}
+          title={`${zoomPercent}%`}
           className="border rounded px-2 py-1 text-xs bg-white/80"
         >
-          {Math.round(displayScale * 100)}%
+          {zoomPercent}%
         </div>
 
         <button
           type="button"
           onClick={() =>
-            setZoomPercent((p) => Math.min(300, p + 5)) // step by 5%
+            setZoomPercent((p) => Math.min(400, p + 5)) // step 5%
           }
           title="Zoom in (Ctrl + '+')"
           className="border rounded px-2 py-1 text-sm"
         >
           +
+        </button>
+
+        <button
+          type="button"
+          onClick={handleFitWidth}
+          title="Fit page width"
+          className="border rounded px-2 py-1 text-xs"
+        >
+          Fit
         </button>
       </div>
 
@@ -198,10 +155,16 @@ export default function PdfViewer({ fileName, citation }: Props) {
               key={p}
               pdfDoc={pdfDoc}
               pageNumber={p}
-              renderScale={autoScale}
-              zoom={zoomFactor}
+              scale={baseScale}
+              zoom={zoom}
               rects={rects.filter((r) => r.pageIndex === p - 1)}
               refEl={(el) => (pageRefs.current[p - 1] = el)}
+              // for the first page, capture its base pixel width once
+              onBaseWidth={(w) => {
+                if (p === 1 && !pageBaseWidth) {
+                  setPageBaseWidth(w);
+                }
+              }}
             />
           ))
         : "Loading..."}
@@ -209,26 +172,26 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---------------- PageView ---------------- */
-
 function PageView({
   pdfDoc,
   pageNumber,
-  renderScale,
+  scale,
   zoom,
   rects,
   refEl,
+  onBaseWidth,
 }: {
   pdfDoc: any;
   pageNumber: number;
-  renderScale: number;
-  zoom: number;
+  scale: number;         // pdfjs render scale (fixed = 1)
+  zoom: number;          // CSS zoom factor
   rects: HighlightRect[];
   refEl: (el: HTMLDivElement | null) => void;
+  onBaseWidth?: (w: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const reportedWidthRef = useRef(false);
 
-  // render pdf page ONLY when doc or renderScale changes
   useEffect(() => {
     let cancel = false;
 
@@ -236,25 +199,29 @@ function PageView({
       const page = await pdfDoc.getPage(pageNumber);
       if (cancel) return;
 
-      const viewport = page.getViewport({ scale: renderScale });
+      const v = page.getViewport({ scale });
       const canvas = canvasRef.current;
       if (!canvas) return;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = v.width;
+      canvas.height = v.height;
 
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvasContext: ctx, viewport: v }).promise;
+
+      if (!reportedWidthRef.current && onBaseWidth && canvas.width) {
+        reportedWidthRef.current = true;
+        onBaseWidth(canvas.width);
+      }
     })();
 
     return () => {
       cancel = true;
     };
-  }, [pdfDoc, pageNumber, renderScale]);
+  }, [pdfDoc, pageNumber, scale, onBaseWidth]);
 
-  // highlight positions in "renderScale" space
   return (
     <div
       ref={refEl}
@@ -268,11 +235,12 @@ function PageView({
     >
       <canvas ref={canvasRef} />
 
+      {/* highlights (note: use base `scale`, not `zoom`) */}
       {rects.map((r) => {
-        const left = r.x * renderScale;
-        const top = r.y * renderScale;
-        const width = r.width * renderScale;
-        const height = r.height * renderScale;
+        const left = r.x * scale;
+        const top = r.y * scale;
+        const width = r.width * scale;
+        const height = r.height * scale;
 
         return (
           <div
