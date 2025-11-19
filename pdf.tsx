@@ -172,3 +172,162 @@ export default function PdfViewer({ fileName, citation }: Props) {
             onClick={goPrevPage}
             className="border rounded px-2 py-1 text-xs"
           >
+            ▲
+          </button>
+          <span className="text-xs">
+            {numPages ? currentPage : 0} / {numPages || 0}
+          </span>
+          <button
+            type="button"
+            onClick={goNextPage}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            ▼
+          </button>
+        </div>
+
+        {/* Zoom controls */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handleZoomChange(-5)}
+            className="border rounded px-2 py-1 text-sm"
+          >
+            −
+          </button>
+          <span className="text-xs border rounded px-2 py-1 bg-white/80">
+            {zoomPercent}%
+          </span>
+          <button
+            type="button"
+            onClick={() => handleZoomChange(5)}
+            className="border rounded px-2 py-1 text-sm"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      {!pdfDoc && "Loading..."}
+
+      {pdfDoc && (
+        <div style={{ paddingTop, paddingBottom }}>
+          {visiblePages.map((pageNumber) => (
+            <React.Fragment key={pageNumber}>
+              <PageView
+                pdfDoc={pdfDoc}
+                pageNumber={pageNumber}
+                scale={scale}
+                rects={rects.filter((r) => r.pageIndex === pageNumber - 1)}
+                onMeasuredHeight={(h) => {
+                  if (!pageHeight && h) setPageHeight(h);
+                }}
+              />
+              {/* Page splitter – soft grey line between pages */}
+              {pageNumber < numPages && (
+                <div
+                  style={{
+                    height: 24,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "80%",
+                      borderBottom: "1px solid #d4d4d4",
+                    }}
+                  />
+                </div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PageView({
+  pdfDoc,
+  pageNumber,
+  scale,
+  rects,
+  onMeasuredHeight,
+}: {
+  pdfDoc: any;
+  pageNumber: number;
+  scale: number;
+  rects: HighlightRect[];
+  onMeasuredHeight?: (h: number) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const reportedRef = useRef(false);
+
+  useEffect(() => {
+    let cancel = false;
+
+    (async () => {
+      const page = await pdfDoc.getPage(pageNumber);
+      if (cancel) return;
+
+      const v = page.getViewport({ scale });
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      canvas.width = v.width;
+      canvas.height = v.height;
+
+      await page.render({ canvasContext: ctx, viewport: v }).promise;
+
+      if (!reportedRef.current && onMeasuredHeight && canvas.height) {
+        reportedRef.current = true;
+        onMeasuredHeight(canvas.height);
+      }
+    })();
+
+    return () => {
+      cancel = true;
+    };
+  }, [pdfDoc, pageNumber, scale, onMeasuredHeight]);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        margin: "16px auto",
+        width: "fit-content",
+        background: "#ffffff",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+      }}
+    >
+      <canvas ref={canvasRef} />
+
+      {rects.map((r) => {
+        const left = r.x * scale;
+        const top = r.y * scale;
+        const width = r.width * scale;
+        const height = r.height * scale;
+
+        return (
+          <div
+            key={r.id}
+            style={{
+              position: "absolute",
+              left,
+              top,
+              width,
+              height,
+              background: "rgba(255,255,0,0.35)",
+              pointerEvents: "none",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
