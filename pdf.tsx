@@ -11,26 +11,30 @@ interface Props {
   citation: HighlightInstruction | null;
 }
 
+const BASE_SCALE = 1.0;          // rendering scale
+const ESTIMATED_PAGE_HEIGHT = 1000; // fallback until we measure real height
+const PAGES_ABOVE = 3;
+const PAGES_BELOW = 4;
+
 export default function PdfViewer({ fileName, citation }: Props) {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [numPages, setNumPages] = useState(0);
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
   const [rects, setRects] = useState<HighlightRect[]>([]);
 
-  // ---------- NEW: zoom ----------
-  const [zoomPercent, setZoomPercent] = useState(100); // 100% by default
-  const zoom = zoomPercent / 100;
+  const [scale, setScale] = useState(BASE_SCALE);
+  const [zoomPercent, setZoomPercent] = useState(100);     // just for UI display
+
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [pageBaseWidth, setPageBaseWidth] = useState<number | null>(null); // width of page at base scale
+  const [scrollTop, setScrollTop] = useState(0);
+  const [pageHeight, setPageHeight] = useState<number | null>(null); // height at BASE_SCALE
 
-  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const measuredPageHeight = pageHeight ?? ESTIMATED_PAGE_HEIGHT;
 
-  const baseScale = 1; // pdfjs render scale – keep fixed for performance
-
-  // fetch only if new file
+  /* ---------- load PDF when file changes ---------- */
   useEffect(() => {
     if (!fileName) return;
-    if (loadedFile === fileName && pdfDoc) return; // cached
+    if (loadedFile === fileName && pdfDoc) return;
 
     let cancelled = false;
 
@@ -49,7 +53,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [fileName]);
 
-  // build highlight rects (unchanged)
+  /* ---------- build highlight rects (same logic as before) ---------- */
   useEffect(() => {
     if (!pdfDoc || !citation || citation.fileName !== fileName) return;
     let cancel = false;
@@ -76,28 +80,56 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, citation, fileName]);
 
-  // scroll to page (unchanged)
-  useEffect(() => {
-    if (!citation || !rects.length) return;
-    const idx = citation.pageNumber - 1;
-    const el = pageRefs.current[idx];
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [citation, rects]);
+  /* ---------- update scrollTop from container ---------- */
+  const handleScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  };
 
-  // Fit-to-width button handler (no live autoscale => no laggy divider)
-  const handleFitWidth = () => {
-    if (!containerRef.current || !pageBaseWidth) return;
-    // available width = container width minus padding (20 left + 20 right)
-    const available = containerRef.current.clientWidth - 40;
-    if (available <= 0) return;
-    const neededPercent = (available / pageBaseWidth) * 100;
-    setZoomPercent(Math.round(neededPercent));
+  /* ---------- virtualisation: determine visible page range ---------- */
+  const currentIndex = Math.floor(scrollTop / measuredPageHeight);
+  const startIndex = Math.max(0, currentIndex - PAGES_ABOVE);
+  const endIndex = Math.min(
+    numPages - 1,
+    currentIndex + PAGES_BELOW
+  );
+
+  const paddingTop = startIndex * measuredPageHeight;
+  const paddingBottom =
+    (numPages - endIndex - 1) * measuredPageHeight;
+
+  /* ---------- scroll to citation page by setting scrollTop ---------- */
+  useEffect(() => {
+    if (!citation || !containerRef.current) return;
+    if (!numPages) return;
+
+    const idx = citation.pageNumber - 1;
+    if (idx < 0 || idx >= numPages) return;
+
+    const pageH = measuredPageHeight;
+    const targetTop =
+      idx * pageH - containerRef.current.clientHeight / 3;
+
+    containerRef.current.scrollTo({
+      top: targetTop,
+      behavior: "smooth",
+    });
+  }, [citation, numPages, measuredPageHeight]);
+
+  /* ---------- zoom controls (re-render only visible pages) ---------- */
+
+  const handleZoomChange = (delta: number) => {
+    setZoomPercent((prev) => {
+      const next = Math.max(25, Math.min(400, prev + delta));
+      // convert percent to scale relative to BASE_SCALE
+      setScale((BASE_SCALE * next) / 100);
+      return next;
+    });
   };
 
   return (
     <div
       ref={containerRef}
+      onScroll={handleScroll}
       style={{
         height: "100%",
         overflow: "auto",
@@ -105,17 +137,15 @@ export default function PdfViewer({ fileName, citation }: Props) {
         scrollBehavior: "smooth",
       }}
     >
-      {/* Acrobat-ish toolbar */}
+      {/* Toolbar */}
       <div
         className="flex justify-end items-center gap-2 mb-2"
         style={{ position: "sticky", top: 0, zIndex: 10, background: "white" }}
       >
         <button
           type="button"
-          onClick={() =>
-            setZoomPercent((p) => Math.max(25, p - 5)) // step 5%
-          }
-          title="Zoom out (Ctrl + '-')"
+          onClick={() => handleZoomChange(-5)}
+          title="Zoom out (−5%)"
           className="border rounded px-2 py-1 text-sm"
         >
           −
@@ -130,44 +160,35 @@ export default function PdfViewer({ fileName, citation }: Props) {
 
         <button
           type="button"
-          onClick={() =>
-            setZoomPercent((p) => Math.min(400, p + 5)) // step 5%
-          }
-          title="Zoom in (Ctrl + '+')"
+          onClick={() => handleZoomChange(5)}
+          title="Zoom in (+5%)"
           className="border rounded px-2 py-1 text-sm"
         >
           +
         </button>
-
-        <button
-          type="button"
-          onClick={handleFitWidth}
-          title="Fit page width"
-          className="border rounded px-2 py-1 text-xs"
-        >
-          Fit
-        </button>
       </div>
 
-      {pdfDoc
-        ? Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+      {!pdfDoc && "Loading..."}
+
+      {pdfDoc && (
+        <div style={{ paddingTop, paddingBottom }}>
+          {Array.from(
+            { length: endIndex - startIndex + 1 },
+            (_, i) => startIndex + i + 1
+          ).map((pageNumber) => (
             <PageView
-              key={p}
+              key={pageNumber}
               pdfDoc={pdfDoc}
-              pageNumber={p}
-              scale={baseScale}
-              zoom={zoom}
-              rects={rects.filter((r) => r.pageIndex === p - 1)}
-              refEl={(el) => (pageRefs.current[p - 1] = el)}
-              // for the first page, capture its base pixel width once
-              onBaseWidth={(w) => {
-                if (p === 1 && !pageBaseWidth) {
-                  setPageBaseWidth(w);
-                }
+              pageNumber={pageNumber}
+              scale={scale}
+              rects={rects.filter((r) => r.pageIndex === pageNumber - 1)}
+              onMeasuredHeight={(h) => {
+                if (!pageHeight && h) setPageHeight(h);
               }}
             />
-          ))
-        : "Loading..."}
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -176,21 +197,17 @@ function PageView({
   pdfDoc,
   pageNumber,
   scale,
-  zoom,
   rects,
-  refEl,
-  onBaseWidth,
+  onMeasuredHeight,
 }: {
   pdfDoc: any;
   pageNumber: number;
-  scale: number;         // pdfjs render scale (fixed = 1)
-  zoom: number;          // CSS zoom factor
+  scale: number;
   rects: HighlightRect[];
-  refEl: (el: HTMLDivElement | null) => void;
-  onBaseWidth?: (w: number) => void;
+  onMeasuredHeight?: (h: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const reportedWidthRef = useRef(false);
+  const reportedRef = useRef(false);
 
   useEffect(() => {
     let cancel = false;
@@ -211,31 +228,27 @@ function PageView({
 
       await page.render({ canvasContext: ctx, viewport: v }).promise;
 
-      if (!reportedWidthRef.current && onBaseWidth && canvas.width) {
-        reportedWidthRef.current = true;
-        onBaseWidth(canvas.width);
+      if (!reportedRef.current && onMeasuredHeight) {
+        reportedRef.current = true;
+        onMeasuredHeight(canvas.height);
       }
     })();
 
     return () => {
       cancel = true;
     };
-  }, [pdfDoc, pageNumber, scale, onBaseWidth]);
+  }, [pdfDoc, pageNumber, scale, onMeasuredHeight]);
 
   return (
     <div
-      ref={refEl}
       style={{
         position: "relative",
         margin: "20px auto",
         width: "fit-content",
-        transform: `scale(${zoom})`,
-        transformOrigin: "top center",
       }}
     >
       <canvas ref={canvasRef} />
 
-      {/* highlights (note: use base `scale`, not `zoom`) */}
       {rects.map((r) => {
         const left = r.x * scale;
         const top = r.y * scale;
