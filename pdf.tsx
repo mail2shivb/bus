@@ -15,7 +15,7 @@ interface Props {
 const RENDER_SCALE = 1.2; // canvas render scale (quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
-const BASE_GAP = 16;      // base gap between pages at 100%
+const PAGE_GAP_PX = 4; // fixed small gap between pages
 
 type PdfDoc = pdfjs.PDFDocumentProxy;
 
@@ -170,21 +170,11 @@ export default function PdfViewer({ fileName, citation }: Props) {
     setCurrentPage((prev) => (prev === clamped ? prev : clamped));
   };
 
+  // Scroll when citation changes (initial + prev/next)
   useEffect(() => {
     if (!activeCitation || !numPages) return;
     scrollToPage(activeCitation.pageNumber);
   }, [activeCitation, numPages]);
-
-  // keep current / active citation page centred after zoom
-  useEffect(() => {
-    if (!numPages) return;
-    const targetPage =
-      activeCitation?.pageNumber != null
-        ? activeCitation.pageNumber
-        : currentPage;
-    scrollToPage(targetPage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoomFactor]);
 
   /* ---------- toolbar actions ---------- */
 
@@ -334,7 +324,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         style={{
           flex: "1 1 auto",
           overflow: "auto",
-          padding: "8px 20px 12px",
+          padding: "4px 16px 8px",
           scrollBehavior: "smooth",
         }}
       >
@@ -365,7 +355,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---------- PageView: lazy canvas render + CSS zoom, zoom-scaled gap ---------- */
+/* ---------- PageView: lazy canvas render + CSS zoom, tiny fixed gap ---------- */
 
 function PageView({
   pdfDoc,
@@ -387,9 +377,6 @@ function PageView({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [shouldRender, setShouldRender] = useState<boolean>(forceRender);
-
-  // gap shrinks with zoom – at 30% you'll see ~3 pages with thin splits
-  const gapPx = Math.max(2, BASE_GAP * zoom); // min 2px
 
   // IntersectionObserver to render only when visible
   useEffect(() => {
@@ -455,7 +442,7 @@ function PageView({
         refEl(el);
       }}
       style={{
-        margin: `0 auto ${gapPx}px`, // vertical gap shrinks at low zoom
+        margin: `0 auto ${PAGE_GAP_PX}px`,
         width: "fit-content",
       }}
     >
