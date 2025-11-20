@@ -12,21 +12,18 @@ interface Props {
   citation: HighlightInstruction | HighlightInstruction[] | null;
 }
 
-const RENDER_SCALE = 1.2; // canvas render scale (for quality)
+const RENDER_SCALE = 1.2; // canvas render scale (quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
 
-/* ------------------------------------------------------------------ */
-/*  Simple caches so tab switches don't re-load everything            */
-/* ------------------------------------------------------------------ */
-
 type PdfDoc = pdfjs.PDFDocumentProxy;
 
-// PDF document per filename
-const pdfDocCache = new Map<string, PdfDoc>();
+/* ------------------------------------------------------------------ */
+/*  CACHES – avoid reloading / re-indexing on every mount             */
+/* ------------------------------------------------------------------ */
 
-// Char map per "fileName:pageIndex"
-const charMapCache = new Map<string, CharBox[]>();
+const pdfDocCache = new Map<string, PdfDoc>(); // filename -> pdfDoc
+const charMapCache = new Map<string, CharBox[]>(); // "file:pageIndex" -> char map
 
 async function getPdfDocCached(fileName: string): Promise<PdfDoc> {
   if (pdfDocCache.has(fileName)) {
@@ -90,7 +87,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     citationList.length > 0 &&
     currentCitationIndex < citationList.length - 1;
 
-  /* ---------- load PDF once per file, from cache if possible ---------- */
+  /* ---------- load PDF once per file (from cache if present) ---------- */
 
   useEffect(() => {
     if (!fileName) return;
@@ -118,7 +115,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [fileName]);
 
-  /* ---------- build highlight rects for active citation (with cache) ---------- */
+  /* ---------- build highlight rects for active citation ---------- */
 
   useEffect(() => {
     if (!pdfDoc || !activeCitation || activeCitation.fileName !== fileName) {
@@ -326,6 +323,10 @@ export default function PdfViewer({ fileName, citation }: Props) {
                   (r) => r.pageIndex === pageNumber - 1
                 )}
                 refEl={(el) => (pageRefs.current[pageNumber - 1] = el)}
+                forceRender={
+                  !!activeCitation &&
+                  activeCitation.pageNumber === pageNumber
+                }
               />
             )
           )}
@@ -334,7 +335,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---------- PageView: render once, zoom with CSS ---------- */
+/* ---------- PageView: lazy canvas render + CSS zoom ---------- */
 
 function PageView({
   pdfDoc,
@@ -343,6 +344,7 @@ function PageView({
   zoom,
   rects,
   refEl,
+  forceRender,
 }: {
   pdfDoc: PdfDoc;
   pageNumber: number;
@@ -350,10 +352,45 @@ function PageView({
   zoom: number;
   rects: HighlightRect[];
   refEl: (el: HTMLDivElement | null) => void;
+  forceRender: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [shouldRender, setShouldRender] = useState<boolean>(forceRender);
 
+  // IntersectionObserver to render only when visible
   useEffect(() => {
+    if (forceRender) {
+      setShouldRender(true);
+      return;
+    }
+    if (shouldRender) return;
+
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting) {
+          setShouldRender(true);
+          observer.disconnect();
+        }
+      },
+      {
+        root: null, // viewport
+        threshold: 0.1,
+      }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [forceRender, shouldRender]);
+
+  // Render the PDF page into the canvas when shouldRender is true
+  useEffect(() => {
+    if (!shouldRender) return;
+
     let cancel = false;
 
     (async () => {
@@ -376,11 +413,14 @@ function PageView({
     return () => {
       cancel = true;
     };
-  }, [pdfDoc, pageNumber, renderScale]);
+  }, [pdfDoc, pageNumber, renderScale, shouldRender]);
 
   return (
     <div
-      ref={refEl}
+      ref={(el) => {
+        containerRef.current = el;
+        refEl(el);
+      }}
       style={{
         position: "relative",
         margin: "16px auto",
