@@ -16,8 +16,46 @@ const RENDER_SCALE = 1.2; // canvas render scale (for quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
 
+/* ------------------------------------------------------------------ */
+/*  Simple caches so tab switches don't re-load everything            */
+/* ------------------------------------------------------------------ */
+
+type PdfDoc = pdfjs.PDFDocumentProxy;
+
+// PDF document per filename
+const pdfDocCache = new Map<string, PdfDoc>();
+
+// Char map per "fileName:pageIndex"
+const charMapCache = new Map<string, CharBox[]>();
+
+async function getPdfDocCached(fileName: string): Promise<PdfDoc> {
+  if (pdfDocCache.has(fileName)) {
+    return pdfDocCache.get(fileName)!;
+  }
+  const data = await getPdfAsync(fileName);
+  const doc = await pdfjs.getDocument({ data }).promise;
+  pdfDocCache.set(fileName, doc);
+  return doc;
+}
+
+async function getCharMapCached(
+  doc: PdfDoc,
+  fileName: string,
+  pageIndex: number
+): Promise<CharBox[]> {
+  const key = `${fileName}:${pageIndex}`;
+  if (charMapCache.has(key)) {
+    return charMapCache.get(key)!;
+  }
+  const chars = await buildCharMap(doc, pageIndex);
+  charMapCache.set(key, chars);
+  return chars;
+}
+
+/* ------------------------------------------------------------------ */
+
 export default function PdfViewer({ fileName, citation }: Props) {
-  const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [pdfDoc, setPdfDoc] = useState<PdfDoc | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
   const [rects, setRects] = useState<HighlightRect[]>([]);
@@ -46,9 +84,13 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const activeCitation: HighlightInstruction | null =
     citationList.length > 0 ? citationList[currentCitationIndex] : null;
 
-  const hasMultiCitations = citationList.length > 1;
+  const canPrevCitation =
+    citationList.length > 0 && currentCitationIndex > 0;
+  const canNextCitation =
+    citationList.length > 0 &&
+    currentCitationIndex < citationList.length - 1;
 
-  /* ---------- load PDF once per file ---------- */
+  /* ---------- load PDF once per file, from cache if possible ---------- */
 
   useEffect(() => {
     if (!fileName) return;
@@ -57,8 +99,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     let cancelled = false;
 
     (async () => {
-      const data = await getPdfAsync(fileName);
-      const doc = await pdfjs.getDocument({ data }).promise;
+      const doc = await getPdfDocCached(fileName);
       if (cancelled) return;
 
       setPdfDoc(doc);
@@ -77,7 +118,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [fileName]);
 
-  /* ---------- build highlight rects for active citation ---------- */
+  /* ---------- build highlight rects for active citation (with cache) ---------- */
 
   useEffect(() => {
     if (!pdfDoc || !activeCitation || activeCitation.fileName !== fileName) {
@@ -90,7 +131,11 @@ export default function PdfViewer({ fileName, citation }: Props) {
       const idx = activeCitation.pageNumber - 1;
       if (idx < 0 || idx >= pdfDoc.numPages) return;
 
-      const chars: CharBox[] = await buildCharMap(pdfDoc, idx);
+      const chars: CharBox[] = await getCharMapCached(
+        pdfDoc,
+        activeCitation.fileName,
+        idx
+      );
       if (cancel) return;
 
       const mRects = rectsForRange(
@@ -147,12 +192,12 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const goNextPage = () => scrollToPage(currentPage + 1);
 
   const goPrevCitation = () => {
-    if (!hasMultiCitations) return;
+    if (!canPrevCitation) return;
     setCurrentCitationIndex((i) => Math.max(0, i - 1));
   };
 
   const goNextCitation = () => {
-    if (!hasMultiCitations) return;
+    if (!canNextCitation) return;
     setCurrentCitationIndex((i) =>
       Math.min(citationList.length - 1, i + 1)
     );
@@ -185,8 +230,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
             <button
               type="button"
               onClick={goPrevPage}
-              disabled={!numPages}
-              className="border rounded px-2 py-1 text-xs"
+              disabled={!numPages || currentPage <= 1}
+              className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
             >
               ▲
             </button>
@@ -196,8 +241,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
             <button
               type="button"
               onClick={goNextPage}
-              disabled={!numPages}
-              className="border rounded px-2 py-1 text-xs"
+              disabled={!numPages || currentPage >= numPages}
+              className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
             >
               ▼
             </button>
@@ -229,9 +274,9 @@ export default function PdfViewer({ fileName, citation }: Props) {
             <button
               type="button"
               onClick={goPrevCitation}
-              disabled={!hasMultiCitations}
+              disabled={!canPrevCitation}
               className={`border rounded px-2 py-1 text-xs ${
-                hasMultiCitations ? "" : "opacity-40 cursor-not-allowed"
+                canPrevCitation ? "" : "opacity-40 cursor-not-allowed"
               }`}
             >
               ◀ Prev citation
@@ -239,9 +284,9 @@ export default function PdfViewer({ fileName, citation }: Props) {
             <button
               type="button"
               onClick={goNextCitation}
-              disabled={!hasMultiCitations}
+              disabled={!canNextCitation}
               className={`border rounded px-2 py-1 text-xs ${
-                hasMultiCitations ? "" : "opacity-40 cursor-not-allowed"
+                canNextCitation ? "" : "opacity-40 cursor-not-allowed"
               }`}
             >
               Next citation ▶
@@ -299,7 +344,7 @@ function PageView({
   rects,
   refEl,
 }: {
-  pdfDoc: any;
+  pdfDoc: PdfDoc;
   pageNumber: number;
   renderScale: number;
   zoom: number;
@@ -342,7 +387,7 @@ function PageView({
         width: "fit-content",
         background: "#ffffff",
         boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-        transform: `scale(zoom)`.replace("zoom", String(zoom)), // to avoid TS complaining in some setups
+        transform: `scale(${zoom})`,
         transformOrigin: "top center",
       }}
     >
