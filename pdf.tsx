@@ -15,6 +15,7 @@ interface Props {
 const RENDER_SCALE = 1.2; // canvas render scale (quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
+const BASE_GAP = 16;      // base gap between pages at 100%
 
 type PdfDoc = pdfjs.PDFDocumentProxy;
 
@@ -240,7 +241,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         </div>
       </div>
 
-      {/* Toolbar – full width, white, no gap below filename bar */}
+      {/* Toolbar – full width, white */}
       <div
         style={{
           flex: "0 0 auto",
@@ -251,7 +252,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         }}
       >
         <div className="flex items-center justify-between">
-          {/* Page navigation (left) */}
+          {/* Page navigation */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -274,7 +275,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
             </button>
           </div>
 
-          {/* Zoom controls (center) */}
+          {/* Zoom controls */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -295,7 +296,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
             </button>
           </div>
 
-          {/* Citation navigation (right) */}
+          {/* Citation navigation */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -364,7 +365,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---------- PageView: lazy canvas render + CSS zoom ---------- */
+/* ---------- PageView: lazy canvas render + CSS zoom, zoom-scaled gap ---------- */
 
 function PageView({
   pdfDoc,
@@ -386,6 +387,9 @@ function PageView({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [shouldRender, setShouldRender] = useState<boolean>(forceRender);
+
+  // gap shrinks with zoom – at 30% you'll see ~3 pages with thin splits
+  const gapPx = Math.max(2, BASE_GAP * zoom); // min 2px
 
   // IntersectionObserver to render only when visible
   useEffect(() => {
@@ -451,38 +455,43 @@ function PageView({
         refEl(el);
       }}
       style={{
-        position: "relative",
-        margin: "0 auto 4px", // <- almost no gap between pages
+        margin: `0 auto ${gapPx}px`, // vertical gap shrinks at low zoom
         width: "fit-content",
-        background: "#ffffff",
-        boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-        transform: `scale(${zoom})`,
-        transformOrigin: "top center",
       }}
     >
-      <canvas ref={canvasRef} />
+      <div
+        style={{
+          position: "relative",
+          background: "#ffffff",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+          transform: `scale(${zoom})`,
+          transformOrigin: "top center",
+        }}
+      >
+        <canvas ref={canvasRef} />
 
-      {rects.map((r) => {
-        const left = r.x * renderScale;
-        const top = r.y * renderScale;
-        const width = r.width * renderScale;
-        const height = r.height * renderScale;
+        {rects.map((r) => {
+          const left = r.x * renderScale;
+          const top = r.y * renderScale;
+          const width = r.width * renderScale;
+          const height = r.height * renderScale;
 
-        return (
-          <div
-            key={r.id}
-            style={{
-              position: "absolute",
-              left,
-              top,
-              width,
-              height,
-              background: "rgba(255,255,0,0.35)",
-              pointerEvents: "none",
-            }}
-          />
-        );
-      })}
+          return (
+            <div
+              key={r.id}
+              style={{
+                position: "absolute",
+                left,
+                top,
+                width,
+                height,
+                background: "rgba(255,255,0,0.35)",
+                pointerEvents: "none",
+              }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
