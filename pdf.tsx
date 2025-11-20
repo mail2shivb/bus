@@ -282,4 +282,51 @@ function PageView({
       await page.render({ canvasContext: ctx, viewport }).promise;
 
       // report base height (scale=1) back to parent for virtualisation
-      if (onMeasuredBaseHe
+      if (onMeasuredBaseHeight) {
+        const baseHeight = viewport.height / scale; // strip scale factor
+        onMeasuredBaseHeight(baseHeight);
+      }
+    })();
+
+    return () => {
+      cancel = true;
+    };
+  }, [pdfDoc, pageNumber, scale, onMeasuredBaseHeight]);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        margin: "0 auto",
+        marginBottom: pageGap,
+        width: "fit-content",
+        background: "#ffffff",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+      }}
+    >
+      <canvas ref={canvasRef} />
+
+      {rects.map((r) => {
+        const left = r.x * scale;
+        const top = r.y * scale;
+        const width = r.width * scale;
+        const height = r.height * scale;
+
+        return (
+          <div
+            key={r.id}
+            style={{
+              position: "absolute",
+              left,
+              top,
+              width,
+              height,
+              background: "rgba(255,255,0,0.35)",
+              pointerEvents: "none",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
