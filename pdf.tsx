@@ -12,8 +12,13 @@ interface Props {
 }
 
 const BASE_SCALE = 1.0;
-const ESTIMATED_PAGE_HEIGHT = 1000; // base (unscaled) estimate
-const BASE_PAGE_GAP = 16;           // constant vertical gap between pages
+
+// We treat this as a height AT SCALE=1 (base height).
+const ESTIMATED_BASE_PAGE_HEIGHT = 1000;
+
+// Constant vertical gap between pages (margin+splitter equivalent)
+const PAGE_GAP = 24;
+
 const PAGES_ABOVE = 3;
 const PAGES_BELOW = 4;
 
@@ -29,12 +34,13 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
 
-  // NEW: base page height (for scale = 1). Virtualisation uses this.
+  // *** NEW: basePageHeight is the height at scale=1 ***
   const [basePageHeight, setBasePageHeight] = useState<number | null>(null);
 
-  // total slot height per page at current zoom
+  // Effective slot height per page at current zoom:
+  //   (page height * scale) + constant gap
   const measuredPageHeight =
-    (basePageHeight ?? ESTIMATED_PAGE_HEIGHT) * scale + BASE_PAGE_GAP;
+    (basePageHeight ?? ESTIMATED_BASE_PAGE_HEIGHT) * scale + PAGE_GAP;
 
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -55,6 +61,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
       setRects([]);
       setCurrentPage(1);
       setScrollTop(0);
+      // reset base page height so we re-measure for this doc
+      setBasePageHeight(null);
       if (containerRef.current) {
         containerRef.current.scrollTop = 0;
       }
@@ -92,7 +100,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, citation, fileName]);
 
-  /* ---------- scroll/virtualisation ---------- */
+  /* ---------- scroll / virtualisation ---------- */
   const handleScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
     const top = e.currentTarget.scrollTop;
     setScrollTop(top);
@@ -115,7 +123,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     (_, i) => startIndex + i + 1
   );
 
-  /* ---------- helper: scroll to a specific page ---------- */
+  /* ---------- helper: scroll to page ---------- */
   const scrollToPage = (pageNumber: number) => {
     if (!containerRef.current || !numPages) return;
     const clamped = Math.min(numPages, Math.max(1, pageNumber));
@@ -159,7 +167,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         background: "#f0f0f0",
       }}
     >
-      {/* top toolbar kept as-is */}
+      {/* simple top toolbar (kept from your version) */}
       <div
         className="flex items-center justify-center gap-6 mb-3"
         style={{
@@ -223,11 +231,11 @@ export default function PdfViewer({ fileName, citation }: Props) {
               pageNumber={pageNumber}
               scale={scale}
               rects={rects.filter((r) => r.pageIndex === pageNumber - 1)}
-              onMeasuredBaseHeight={(h) => {
-                // h is the base (unscaled) height of the page
-                if (!basePageHeight && h) setBasePageHeight(h);
+              onMeasuredBaseHeight={(baseH) => {
+                // only set once, for the first measured page
+                if (!basePageHeight && baseH) setBasePageHeight(baseH);
               }}
-              pageGap={BASE_PAGE_GAP}
+              pageGap={PAGE_GAP}
             />
           ))}
         </div>
@@ -267,57 +275,11 @@ function PageView({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
+      // basic canvas size – no CSS transforms, nothing negative
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
       await page.render({ canvasContext: ctx, viewport }).promise;
 
-      // report BASE (scale=1) height so virtualisation can adjust for zoom
-      if (onMeasuredBaseHeight) {
-        const baseHeight = viewport.height / scale; // H( scale=1 )
-        onMeasuredBaseHeight(baseHeight);
-      }
-    })();
-
-    return () => {
-      cancel = true;
-    };
-  }, [pdfDoc, pageNumber, scale, onMeasuredBaseHeight]);
-
-  return (
-    <div
-      style={{
-        position: "relative",
-        margin: "0 auto",
-        marginBottom: pageGap, // constant gap included in virtual height
-        width: "fit-content",
-        background: "#ffffff",
-        boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-      }}
-    >
-      <canvas ref={canvasRef} />
-
-      {rects.map((r) => {
-        const left = r.x * scale;
-        const top = r.y * scale;
-        const width = r.width * scale;
-        const height = r.height * scale;
-
-        return (
-          <div
-            key={r.id}
-            style={{
-              position: "absolute",
-              left,
-              top,
-              width,
-              height,
-              background: "rgba(255,255,0,0.35)",
-              pointerEvents: "none",
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-}
+      // report base height (scale=1) back to parent for virtualisation
+      if (onMeasuredBaseHe
