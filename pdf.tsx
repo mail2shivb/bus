@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  UIEventHandler,
+} from "react";
 import * as pdfjs from "pdfjs-dist";
 import { getPdfAsync } from "api/authenticated-fetch";
 
@@ -8,13 +14,13 @@ import { buildCharMap, rectsForRange } from "./pdfTextIndex";
 
 interface Props {
   fileName: string | null;
-  // single or multiple citations
+  // can be single or multiple citations
   citation: HighlightInstruction | HighlightInstruction[] | null;
 }
 
 const BASE_SCALE = 1.0;
 
-// Base (scale=1) estimate
+// we treat this as base (scale=1) height
 const ESTIMATED_BASE_PAGE_HEIGHT = 1000;
 const PAGE_GAP = 24;
 const PAGES_ABOVE = 3;
@@ -24,6 +30,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [numPages, setNumPages] = useState(0);
   const [loadedFile, setLoadedFile] = useState<string | null>(null);
+
   const [rects, setRects] = useState<HighlightRect[]>([]);
 
   const [scale, setScale] = useState(BASE_SCALE);
@@ -33,13 +40,20 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
 
   const [basePageHeight, setBasePageHeight] = useState<number | null>(null);
+  const [ready, setReady] = useState(false); // true once we know real page height
 
+  // effective slot height per page at current zoom
   const measuredPageHeight =
     (basePageHeight ?? ESTIMATED_BASE_PAGE_HEIGHT) * scale + PAGE_GAP;
 
   const [currentPage, setCurrentPage] = useState(1);
 
-  /* ---------- citations: normalise to array ---------- */
+  // if we get a scroll request before we’re "ready" we queue it here
+  const [pendingScrollPage, setPendingScrollPage] = useState<number | null>(
+    null
+  );
+
+  /* ---------- citations normalised to array ---------- */
 
   const citationList: HighlightInstruction[] = useMemo(() => {
     if (!citation) return [];
@@ -56,6 +70,12 @@ export default function PdfViewer({ fileName, citation }: Props) {
     citationList.length > 0 ? citationList[currentCitationIndex] : null;
 
   const hasMultiCitations = citationList.length > 1;
+
+  /* ---------- mark ready once we have a real base height ---------- */
+
+  useEffect(() => {
+    if (basePageHeight && !ready) setReady(true);
+  }, [basePageHeight, ready]);
 
   /* ---------- load PDF ---------- */
 
@@ -77,6 +97,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
       setCurrentPage(1);
       setScrollTop(0);
       setBasePageHeight(null);
+      setReady(false);
+      setPendingScrollPage(null);
 
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
@@ -121,19 +143,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
 
   /* ---------- scroll / virtualisation ---------- */
 
-  const handleScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
+  const handleScroll: UIEventHandler<HTMLDivElement> = (e) => {
     const top = e.currentTarget.scrollTop;
     setScrollTop(top);
 
-    if (!numPages) return;
+    if (!numPages || !ready) return;
     const idx = Math.floor(top / measuredPageHeight);
     const page = Math.min(numPages, Math.max(1, idx + 1));
     setCurrentPage(page);
   };
 
-  const currentIndex = Math.floor(scrollTop / measuredPageHeight);
-  const startIndex = Math.max(0, currentIndex - PAGES_ABOVE);
-  const endIndex = Math.min(numPages - 1, currentIndex + PAGES_BELOW);
+  const currentIndex = ready ? Math.floor(scrollTop / measuredPageHeight) : 0;
+  const startIndex = ready ? Math.max(0, currentIndex - PAGES_ABOVE) : 0;
+  const endIndex = ready
+    ? Math.min(numPages - 1, currentIndex + PAGES_BELOW)
+    : 0;
 
   const paddingTop = startIndex * measuredPageHeight;
   const paddingBottom = (numPages - endIndex - 1) * measuredPageHeight;
@@ -143,27 +167,20 @@ export default function PdfViewer({ fileName, citation }: Props) {
     (_, i) => startIndex + i + 1
   );
 
-  /* ---------- helper: scroll to a specific page (used for citations) ---------- */
+  /* ---------- helper: scroll to page (absolute) ---------- */
+
   const scrollToPage = (pageNumber: number) => {
     if (!scrollContainerRef.current || !numPages) return;
     const clamped = Math.min(numPages, Math.max(1, pageNumber));
-    const idx = clamped - 1;
 
-    // If we haven't measured yet, avoid doing something crazy.
-    if (!basePageHeight) {
-      // Try to scroll to an existing DOM page if it's currently rendered
-      const el = scrollContainerRef.current.querySelector<HTMLElement>(
-        `[data-page="${clamped}"]`
-      );
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-      // If it's not rendered yet (virtualisation), better to not jump incorrectly.
+    // if we’re not ready yet, queue and return
+    if (!ready || !basePageHeight) {
+      setPendingScrollPage(clamped);
       return;
     }
 
-    const slotHeight = basePageHeight * scale + PAGE_GAP;
-    const targetTop = idx * slotHeight;
+    const idx = clamped - 1;
+    const targetTop = idx * measuredPageHeight;
 
     scrollContainerRef.current.scrollTo({
       top: targetTop,
@@ -171,12 +188,19 @@ export default function PdfViewer({ fileName, citation }: Props) {
     });
   };
 
-  /* ---------- scroll to active citation ---------- */
+  // once we become ready and have a pending scroll, execute it
+  useEffect(() => {
+    if (!ready || !pendingScrollPage) return;
+    scrollToPage(pendingScrollPage);
+    setPendingScrollPage(null);
+  }, [ready, pendingScrollPage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---------- scroll to active citation when it changes ---------- */
 
   useEffect(() => {
     if (!activeCitation) return;
     scrollToPage(activeCitation.pageNumber);
-  }, [activeCitation, basePageHeight, scale, numPages]);
+  }, [activeCitation, numPages]); // scale/height changes are handled by scrollToPage + ready logic
 
   /* ---------- zoom ---------- */
 
@@ -188,23 +212,10 @@ export default function PdfViewer({ fileName, citation }: Props) {
     });
   };
 
-  /* ---------- page arrows use relative scroll (always works) ---------- */
+  /* ---------- page arrows (use absolute page index) ---------- */
 
-  const goPrevPage = () => {
-    if (!scrollContainerRef.current) return;
-    scrollContainerRef.current.scrollBy({
-      top: -measuredPageHeight,
-      behavior: "smooth",
-    });
-  };
-
-  const goNextPage = () => {
-    if (!scrollContainerRef.current) return;
-    scrollContainerRef.current.scrollBy({
-      top: measuredPageHeight,
-      behavior: "smooth",
-    });
-  };
+  const goPrevPage = () => scrollToPage(currentPage - 1);
+  const goNextPage = () => scrollToPage(currentPage + 1);
 
   /* ---------- citation arrows ---------- */
 
@@ -231,7 +242,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         background: "#f0f0f0",
       }}
     >
-      {/* TOOLBAR: full width, white, no gap at top */}
+      {/* TOOLBAR – top, full width, white background */}
       <div
         style={{
           flex: "0 0 auto",
@@ -316,7 +327,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         </div>
       </div>
 
-      {/* Scrollable PDF area */}
+      {/* Scrollable pages */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
@@ -353,7 +364,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   );
 }
 
-/* ---------- PageView (unchanged in behaviour) ---------- */
+/* ---------- PageView ---------- */
 
 function PageView({
   pdfDoc,
