@@ -12,7 +12,7 @@ interface Props {
   citation: HighlightInstruction | HighlightInstruction[] | null;
 }
 
-const RENDER_SCALE = 1.2; // canvas render scale (quality)
+const RENDER_SCALE = 1.2; // canvas render scale (for quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
 
@@ -66,6 +66,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
       setLoadedFile(fileName);
       setRects([]);
       setCurrentPage(1);
+
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
       }
@@ -107,21 +108,31 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, activeCitation, fileName]);
 
-  /* ---------- scroll helpers (no virtual estimates) ---------- */
+  /* ---------- scroll helpers (no virtualisation) ---------- */
 
-  const scrollToPage = (pageNumber: number) => {
-    const clamped = Math.min(numPages || 1, Math.max(1, pageNumber));
+  // retry until the page ref exists (handles first-load race)
+  const scrollToPage = (pageNumber: number, attempt = 0) => {
+    if (!numPages) return;
+
+    const clamped = Math.min(numPages, Math.max(1, pageNumber));
     const el = pageRefs.current[clamped - 1];
-    if (!el) return;
+
+    if (!el) {
+      if (attempt < 10) {
+        setTimeout(() => scrollToPage(pageNumber, attempt + 1), 50);
+      }
+      return;
+    }
+
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     setCurrentPage(clamped);
   };
 
-  // When active citation changes, scroll to its page
+  // When active citation changes, scroll to its page (after pages exist)
   useEffect(() => {
-    if (!activeCitation) return;
+    if (!activeCitation || !numPages) return;
     scrollToPage(activeCitation.pageNumber);
-  }, [activeCitation]);
+  }, [activeCitation, numPages]);
 
   /* ---------- toolbar actions ---------- */
 
@@ -258,19 +269,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
         {!pdfDoc && "Loading..."}
 
         {pdfDoc &&
-          Array.from({ length: numPages }, (_, i) => i + 1).map((pageNumber) => (
-            <PageView
-              key={pageNumber}
-              pdfDoc={pdfDoc}
-              pageNumber={pageNumber}
-              renderScale={RENDER_SCALE}
-              zoom={zoomFactor}
-              rects={rects.filter(
-                (r) => r.pageIndex === pageNumber - 1
-              )}
-              refEl={(el) => (pageRefs.current[pageNumber - 1] = el)}
-            />
-          ))}
+          Array.from({ length: numPages }, (_, i) => i + 1).map(
+            (pageNumber) => (
+              <PageView
+                key={pageNumber}
+                pdfDoc={pdfDoc}
+                pageNumber={pageNumber}
+                renderScale={RENDER_SCALE}
+                zoom={zoomFactor}
+                rects={rects.filter(
+                  (r) => r.pageIndex === pageNumber - 1
+                )}
+                refEl={(el) => (pageRefs.current[pageNumber - 1] = el)}
+              />
+            )
+          )}
       </div>
     </div>
   );
@@ -329,7 +342,7 @@ function PageView({
         width: "fit-content",
         background: "#ffffff",
         boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-        transform: `scale(${zoom})`,
+        transform: `scale(zoom)`.replace("zoom", String(zoom)), // to avoid TS complaining in some setups
         transformOrigin: "top center",
       }}
     >
