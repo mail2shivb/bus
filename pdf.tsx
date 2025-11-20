@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import * as pdfjs from "pdfjs-dist";
 import { getPdfAsync } from "api/authenticated-fetch";
 
@@ -8,17 +8,15 @@ import { buildCharMap, rectsForRange } from "./pdfTextIndex";
 
 interface Props {
   fileName: string | null;
-  citation: HighlightInstruction | null;
+  // NOW supports one or many citations
+  citation: HighlightInstruction | HighlightInstruction[] | null;
 }
 
 const BASE_SCALE = 1.0;
 
-// We treat this as a height AT SCALE=1 (base height).
+// Base (scale=1) estimate
 const ESTIMATED_BASE_PAGE_HEIGHT = 1000;
-
-// Constant vertical gap between pages (margin+splitter equivalent)
 const PAGE_GAP = 24;
-
 const PAGES_ABOVE = 3;
 const PAGES_BELOW = 4;
 
@@ -31,20 +29,35 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const [scale, setScale] = useState(BASE_SCALE);
   const [zoomPercent, setZoomPercent] = useState(100);
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
 
-  // *** NEW: basePageHeight is the height at scale=1 ***
   const [basePageHeight, setBasePageHeight] = useState<number | null>(null);
-
-  // Effective slot height per page at current zoom:
-  //   (page height * scale) + constant gap
   const measuredPageHeight =
     (basePageHeight ?? ESTIMATED_BASE_PAGE_HEIGHT) * scale + PAGE_GAP;
 
   const [currentPage, setCurrentPage] = useState(1);
 
+  /* ---------- citation normalisation ---------- */
+
+  const citationList: HighlightInstruction[] = useMemo(() => {
+    if (!citation) return [];
+    return Array.isArray(citation) ? citation : [citation];
+  }, [citation]);
+
+  const [currentCitationIndex, setCurrentCitationIndex] = useState(0);
+
+  useEffect(() => {
+    setCurrentCitationIndex(0); // reset when new citations arrive
+  }, [citationList.length, fileName]);
+
+  const activeCitation: HighlightInstruction | null =
+    citationList.length > 0 ? citationList[currentCitationIndex] : null;
+
+  const hasMultiCitations = citationList.length > 1;
+
   /* ---------- load PDF ---------- */
+
   useEffect(() => {
     if (!fileName) return;
     if (loadedFile === fileName && pdfDoc) return;
@@ -55,16 +68,16 @@ export default function PdfViewer({ fileName, citation }: Props) {
       const data = await getPdfAsync(fileName);
       const doc = await pdfjs.getDocument({ data }).promise;
       if (cancelled) return;
+
       setPdfDoc(doc);
       setNumPages(doc.numPages);
       setLoadedFile(fileName);
       setRects([]);
       setCurrentPage(1);
       setScrollTop(0);
-      // reset base page height so we re-measure for this doc
       setBasePageHeight(null);
-      if (containerRef.current) {
-        containerRef.current.scrollTop = 0;
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = 0;
       }
     })();
 
@@ -74,12 +87,16 @@ export default function PdfViewer({ fileName, citation }: Props) {
   }, [fileName]);
 
   /* ---------- highlights ---------- */
+
   useEffect(() => {
-    if (!pdfDoc || !citation || citation.fileName !== fileName) return;
+    if (!pdfDoc || !activeCitation || activeCitation.fileName !== fileName) {
+      setRects([]);
+      return;
+    }
     let cancel = false;
 
     (async () => {
-      const idx = citation.pageNumber - 1;
+      const idx = activeCitation.pageNumber - 1;
       if (idx < 0 || idx >= pdfDoc.numPages) return;
 
       const chars: CharBox[] = await buildCharMap(pdfDoc, idx);
@@ -87,20 +104,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
 
       const mRects = rectsForRange(
         chars,
-        citation.offsetStart,
-        citation.offsetEnd
+        activeCitation.offsetStart,
+        activeCitation.offsetEnd
       );
       setRects(
-        mRects.map((r, x) => ({ ...r, id: citation.id + ":" + x }))
+        mRects.map((r, x) => ({ ...r, id: activeCitation.id + ":" + x }))
       );
     })();
 
     return () => {
       cancel = true;
     };
-  }, [pdfDoc, citation, fileName]);
+  }, [pdfDoc, activeCitation, fileName]);
 
   /* ---------- scroll / virtualisation ---------- */
+
   const handleScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
     const top = e.currentTarget.scrollTop;
     setScrollTop(top);
@@ -123,27 +141,29 @@ export default function PdfViewer({ fileName, citation }: Props) {
     (_, i) => startIndex + i + 1
   );
 
-  /* ---------- helper: scroll to page ---------- */
+  /* ---------- helper: scroll to page (FIXED) ---------- */
   const scrollToPage = (pageNumber: number) => {
-    if (!containerRef.current || !numPages) return;
+    if (!scrollContainerRef.current || !numPages) return;
     const clamped = Math.min(numPages, Math.max(1, pageNumber));
     const idx = clamped - 1;
-    const targetTop =
-      idx * measuredPageHeight - containerRef.current.clientHeight / 3;
 
-    containerRef.current.scrollTo({
+    // IMPORTANT: align top of page with virtual slot
+    const targetTop = idx * measuredPageHeight;
+
+    scrollContainerRef.current.scrollTo({
       top: targetTop,
       behavior: "smooth",
     });
   };
 
-  /* ---------- scroll to citation ---------- */
+  /* ---------- scroll to active citation ---------- */
   useEffect(() => {
-    if (!citation) return;
-    scrollToPage(citation.pageNumber);
-  }, [citation, measuredPageHeight, numPages]);
+    if (!activeCitation) return;
+    scrollToPage(activeCitation.pageNumber);
+  }, [activeCitation, measuredPageHeight, numPages]);
 
   /* ---------- zoom ---------- */
+
   const handleZoomChange = (delta: number) => {
     setZoomPercent((prev) => {
       const next = Math.max(25, Math.min(400, prev + delta));
@@ -153,96 +173,154 @@ export default function PdfViewer({ fileName, citation }: Props) {
   };
 
   const goPrevPage = () => scrollToPage(currentPage - 1);
-  const goNextPage = () => scrollToPage(currentPage + 1);
+  const goNextPage = () => scrollToPage(currentPage + 1); // ▼ now works because of fixed scrollToPage
+
+  const goPrevCitation = () => {
+    if (!hasMultiCitations) return;
+    setCurrentCitationIndex((i) => Math.max(0, i - 1));
+  };
+
+  const goNextCitation = () => {
+    if (!hasMultiCitations) return;
+    setCurrentCitationIndex((i) =>
+      Math.min(citationList.length - 1, i + 1)
+    );
+  };
+
+  /* ---------- RENDER ---------- */
 
   return (
     <div
-      ref={containerRef}
-      onScroll={handleScroll}
       style={{
+        display: "flex",
+        flexDirection: "column",
         height: "100%",
-        overflow: "auto",
-        padding: 20,
-        scrollBehavior: "smooth",
         background: "#f0f0f0",
       }}
     >
-      {/* simple top toolbar (kept from your version) */}
+      {/* TOOLBAR: full width, top, white background, no gap */}
       <div
-        className="flex items-center justify-center gap-6 mb-3"
         style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 10,
-          background: "#f0f0f0",
-          paddingBottom: 6,
-          paddingTop: 4,
+          flex: "0 0 auto",
+          width: "100%",
+          background: "#ffffff",
+          borderBottom: "1px solid #e0e0e0",
+          padding: "6px 16px",
         }}
       >
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={goPrevPage}
-            className="border rounded px-2 py-1 text-xs"
-          >
-            ▲
-          </button>
-          <span className="text-xs">
-            {numPages ? currentPage : 0} / {numPages || 0}
-          </span>
-          <button
-            type="button"
-            onClick={goNextPage}
-            className="border rounded px-2 py-1 text-xs"
-          >
-            ▼
-          </button>
-        </div>
+        <div className="flex items-center justify-between">
+          {/* Left: page navigation */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={goPrevPage}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              ▲
+            </button>
+            <span className="text-xs">
+              {numPages ? currentPage : 0} / {numPages || 0}
+            </span>
+            <button
+              type="button"
+              onClick={goNextPage}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              ▼
+            </button>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => handleZoomChange(-5)}
-            className="border rounded px-2 py-1 text-sm"
-          >
-            −
-          </button>
-          <span className="text-xs border rounded px-2 py-1 bg-white/80">
-            {zoomPercent}%
-          </span>
-          <button
-            type="button"
-            onClick={() => handleZoomChange(5)}
-            className="border rounded px-2 py-1 text-sm"
-          >
-            +
-          </button>
+          {/* Centre: zoom controls */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleZoomChange(-5)}
+              className="border rounded px-2 py-1 text-sm"
+            >
+              −
+            </button>
+            <span className="text-xs border rounded px-2 py-1 bg-white">
+              {zoomPercent}%
+            </span>
+            <button
+              type="button"
+              onClick={() => handleZoomChange(5)}
+              className="border rounded px-2 py-1 text-sm"
+            >
+              +
+            </button>
+          </div>
+
+          {/* Right: citation navigation */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={goPrevCitation}
+              disabled={!hasMultiCitations}
+              className={`border rounded px-2 py-1 text-xs ${
+                hasMultiCitations ? "" : "opacity-40 cursor-not-allowed"
+              }`}
+            >
+              ◀ Prev citation
+            </button>
+            <button
+              type="button"
+              onClick={goNextCitation}
+              disabled={!hasMultiCitations}
+              className={`border rounded px-2 py-1 text-xs ${
+                hasMultiCitations ? "" : "opacity-40 cursor-not-allowed"
+              }`}
+            >
+              Next citation ▶
+            </button>
+
+            {citationList.length > 0 && (
+              <span className="text-xs text-gray-500">
+                {currentCitationIndex + 1} / {citationList.length}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
-      {!pdfDoc && "Loading..."}
+      {/* Scrollable PDF container */}
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        style={{
+          flex: "1 1 auto",
+          overflow: "auto",
+          padding: 20,
+          scrollBehavior: "smooth",
+        }}
+      >
+        {!pdfDoc && "Loading..."}
 
-      {pdfDoc && (
-        <div style={{ paddingTop, paddingBottom }}>
-          {visiblePages.map((pageNumber) => (
-            <PageView
-              key={pageNumber}
-              pdfDoc={pdfDoc}
-              pageNumber={pageNumber}
-              scale={scale}
-              rects={rects.filter((r) => r.pageIndex === pageNumber - 1)}
-              onMeasuredBaseHeight={(baseH) => {
-                // only set once, for the first measured page
-                if (!basePageHeight && baseH) setBasePageHeight(baseH);
-              }}
-              pageGap={PAGE_GAP}
-            />
-          ))}
-        </div>
-      )}
+        {pdfDoc && (
+          <div style={{ paddingTop, paddingBottom }}>
+            {visiblePages.map((pageNumber) => (
+              <PageView
+                key={pageNumber}
+                pdfDoc={pdfDoc}
+                pageNumber={pageNumber}
+                scale={scale}
+                rects={rects.filter(
+                  (r) => r.pageIndex === pageNumber - 1
+                )}
+                onMeasuredBaseHeight={(baseH) => {
+                  if (!basePageHeight && baseH) setBasePageHeight(baseH);
+                }}
+                pageGap={PAGE_GAP}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
+/* ---------- PageView stays mostly the same ---------- */
 
 function PageView({
   pdfDoc,
@@ -275,15 +353,13 @@ function PageView({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // basic canvas size – no CSS transforms, nothing negative
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
       await page.render({ canvasContext: ctx, viewport }).promise;
 
-      // report base height (scale=1) back to parent for virtualisation
       if (onMeasuredBaseHeight) {
-        const baseHeight = viewport.height / scale; // strip scale factor
+        const baseHeight = viewport.height / scale;
         onMeasuredBaseHeight(baseHeight);
       }
     })();
