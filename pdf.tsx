@@ -1,4 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  memo,
+} from "react";
 import * as pdfjs from "pdfjs-dist";
 import { getPdfAsync } from "api/authenticated-fetch";
 
@@ -6,21 +13,25 @@ import "./pdfWorker";
 import type { HighlightInstruction, HighlightRect, CharBox } from "../types";
 import { buildCharMap, rectsForRange } from "./pdfTextIndex";
 
+/* ------------------------------------------------------------------ */
+/*  Types & constants                                                  */
+/* ------------------------------------------------------------------ */
+
 interface Props {
   fileName: string | null;
-  // single or multiple citations
+  // can be single or many citations
   citation: HighlightInstruction | HighlightInstruction[] | null;
 }
+
+type PdfDoc = pdfjs.PDFDocumentProxy;
 
 const RENDER_SCALE = 1.2; // canvas render scale (quality)
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 400;
-const PAGE_GAP_PX = 4; // fixed small gap between pages
-
-type PdfDoc = pdfjs.PDFDocumentProxy;
+const PAGE_GAP_PX = 4; // tiny gap between pages (Acrobat-style)
 
 /* ------------------------------------------------------------------ */
-/*  CACHES – avoid reloading / re-indexing on every mount             */
+/*  Simple in-memory caches                                           */
 /* ------------------------------------------------------------------ */
 
 const pdfDocCache = new Map<string, PdfDoc>(); // filename -> pdfDoc
@@ -51,6 +62,8 @@ async function getCharMapCached(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Main component                                                    */
+/* ------------------------------------------------------------------ */
 
 export default function PdfViewer({ fileName, citation }: Props) {
   const [pdfDoc, setPdfDoc] = useState<PdfDoc | null>(null);
@@ -66,7 +79,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  /* ---------- normalise citations ---------- */
+  /* ---------- normalise citations & state ---------- */
 
   const citationList: HighlightInstruction[] = useMemo(() => {
     if (!citation) return [];
@@ -75,6 +88,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
 
   const [currentCitationIndex, setCurrentCitationIndex] = useState(0);
 
+  // reset citation index when file or list length changes
   useEffect(() => {
     setCurrentCitationIndex(0);
   }, [citationList.length, fileName]);
@@ -88,7 +102,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     citationList.length > 0 &&
     currentCitationIndex < citationList.length - 1;
 
-  /* ---------- load PDF once per file (from cache if present) ---------- */
+  /* ---------- load PDF once per file ---------- */
 
   useEffect(() => {
     if (!fileName) return;
@@ -114,7 +128,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [fileName]);
+  }, [fileName, loadedFile, pdfDoc]);
 
   /* ---------- build highlight rects for active citation ---------- */
 
@@ -123,16 +137,17 @@ export default function PdfViewer({ fileName, citation }: Props) {
       setRects([]);
       return;
     }
+
     let cancel = false;
 
     (async () => {
-      const idx = activeCitation.pageNumber - 1;
-      if (idx < 0 || idx >= pdfDoc.numPages) return;
+      const pageIndex = activeCitation.pageNumber - 1;
+      if (pageIndex < 0 || pageIndex >= pdfDoc.numPages) return;
 
       const chars: CharBox[] = await getCharMapCached(
         pdfDoc,
         activeCitation.fileName,
-        idx
+        pageIndex
       );
       if (cancel) return;
 
@@ -142,7 +157,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         activeCitation.offsetEnd
       );
       setRects(
-        mRects.map((r, x) => ({ ...r, id: activeCitation.id + ":" + x }))
+        mRects.map((r, i) => ({ ...r, id: `${activeCitation.id}:${i}` }))
       );
     })();
 
@@ -151,59 +166,78 @@ export default function PdfViewer({ fileName, citation }: Props) {
     };
   }, [pdfDoc, activeCitation, fileName]);
 
-  /* ---------- scroll helpers (no virtualisation) ---------- */
+  /* ---------- scroll helpers ---------- */
 
-  const scrollToPage = (pageNumber: number, attempt = 0) => {
-    if (!numPages) return;
+  const scrollToPage = useCallback(
+    (pageNumber: number, attempt = 0) => {
+      if (!numPages) return;
 
-    const clamped = Math.min(numPages, Math.max(1, pageNumber));
-    const el = pageRefs.current[clamped - 1];
+      const clamped = Math.min(numPages, Math.max(1, pageNumber));
+      const el = pageRefs.current[clamped - 1];
 
-    if (!el) {
-      if (attempt < 10) {
-        setTimeout(() => scrollToPage(pageNumber, attempt + 1), 50);
+      if (!el) {
+        // page DOM not ready yet – retry a few times
+        if (attempt < 10) {
+          setTimeout(() => scrollToPage(clamped, attempt + 1), 50);
+        }
+        return;
       }
-      return;
-    }
 
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-    setCurrentPage((prev) => (prev === clamped ? prev : clamped));
-  };
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      setCurrentPage((prev) => (prev === clamped ? prev : clamped));
+    },
+    [numPages]
+  );
 
   // Scroll when citation changes (initial + prev/next)
   useEffect(() => {
     if (!activeCitation || !numPages) return;
     scrollToPage(activeCitation.pageNumber);
-  }, [activeCitation, numPages]);
+  }, [activeCitation, numPages, scrollToPage]);
 
-  /* ---------- toolbar actions ---------- */
+  /* ---------- toolbar handlers ---------- */
 
-  const handleZoomChange = (delta: number) => {
-    setZoomPercent((prev) => {
-      const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + delta));
-      return next;
-    });
-  };
+  const handleZoomChange = useCallback((delta: number) => {
+    setZoomPercent((prev) =>
+      Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + delta))
+    );
+  }, []);
 
-  const goPrevPage = () => scrollToPage(currentPage - 1);
-  const goNextPage = () => scrollToPage(currentPage + 1);
+  const goPrevPage = useCallback(() => {
+    scrollToPage(currentPage - 1);
+  }, [currentPage, scrollToPage]);
 
-  const goPrevCitation = () => {
+  const goNextPage = useCallback(() => {
+    scrollToPage(currentPage + 1);
+  }, [currentPage, scrollToPage]);
+
+  const goPrevCitation = useCallback(() => {
     if (!canPrevCitation) return;
     setCurrentCitationIndex((i) => Math.max(0, i - 1));
-  };
+  }, [canPrevCitation]);
 
-  const goNextCitation = () => {
+  const goNextCitation = useCallback(() => {
     if (!canNextCitation) return;
     setCurrentCitationIndex((i) =>
       Math.min(citationList.length - 1, i + 1)
     );
-  };
+  }, [canNextCitation, citationList.length]);
 
-  const shortFileName =
-    fileName && fileName.length > 60
-      ? "…" + fileName.slice(-60)
-      : fileName || "";
+  const shortFileName = useMemo(
+    () =>
+      fileName && fileName.length > 60
+        ? "…" + fileName.slice(-60)
+        : fileName || "",
+    [fileName]
+  );
+
+  const pages = useMemo(
+    () =>
+      pdfDoc
+        ? Array.from({ length: numPages }, (_, i) => i + 1)
+        : ([] as number[]),
+    [pdfDoc, numPages]
+  );
 
   /* ---------- render ---------- */
 
@@ -216,7 +250,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         background: "#f0f0f0",
       }}
     >
-      {/* Filename bar ABOVE toolbar */}
+      {/* Filename bar */}
       <div
         style={{
           flex: "0 0 auto",
@@ -231,7 +265,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         </div>
       </div>
 
-      {/* Toolbar – full width, white */}
+      {/* Toolbar */}
       <div
         style={{
           flex: "0 0 auto",
@@ -331,41 +365,33 @@ export default function PdfViewer({ fileName, citation }: Props) {
         {!pdfDoc && "Loading..."}
 
         {pdfDoc &&
-          Array.from({ length: numPages }, (_, i) => i + 1).map(
-            (pageNumber) => (
-              <PageView
-                key={pageNumber}
-                pdfDoc={pdfDoc}
-                pageNumber={pageNumber}
-                renderScale={RENDER_SCALE}
-                zoom={zoomFactor}
-                rects={rects.filter(
-                  (r) => r.pageIndex === pageNumber - 1
-                )}
-                refEl={(el) => (pageRefs.current[pageNumber - 1] = el)}
-                forceRender={
-                  !!activeCitation &&
-                  activeCitation.pageNumber === pageNumber
-                }
-              />
-            )
-          )}
+          pages.map((pageNumber) => (
+            <PageView
+              key={pageNumber}
+              pdfDoc={pdfDoc}
+              pageNumber={pageNumber}
+              renderScale={RENDER_SCALE}
+              zoom={zoomFactor}
+              rects={rects.filter(
+                (r) => r.pageIndex === pageNumber - 1
+              )}
+              refEl={(el) => (pageRefs.current[pageNumber - 1] = el)}
+              forceRender={
+                !!activeCitation &&
+                activeCitation.pageNumber === pageNumber
+              }
+            />
+          ))}
       </div>
     </div>
   );
 }
 
-/* ---------- PageView: lazy canvas render + CSS zoom, tiny fixed gap ---------- */
+/* ------------------------------------------------------------------ */
+/*  PageView – lazy canvas render + CSS zoom, tiny fixed gap          */
+/* ------------------------------------------------------------------ */
 
-function PageView({
-  pdfDoc,
-  pageNumber,
-  renderScale,
-  zoom,
-  rects,
-  refEl,
-  forceRender,
-}: {
+interface PageViewProps {
   pdfDoc: PdfDoc;
   pageNumber: number;
   renderScale: number;
@@ -373,7 +399,17 @@ function PageView({
   rects: HighlightRect[];
   refEl: (el: HTMLDivElement | null) => void;
   forceRender: boolean;
-}) {
+}
+
+const PageView = memo(function PageView({
+  pdfDoc,
+  pageNumber,
+  renderScale,
+  zoom,
+  rects,
+  refEl,
+  forceRender,
+}: PageViewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [shouldRender, setShouldRender] = useState<boolean>(forceRender);
@@ -481,4 +517,4 @@ function PageView({
       </div>
     </div>
   );
-}
+});
