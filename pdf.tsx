@@ -152,7 +152,6 @@ export default function PdfViewer({ fileName, citation }: Props) {
 
   /* ---------- scroll helpers (no virtualisation) ---------- */
 
-  // retry until the page ref exists (handles first-load race)
   const scrollToPage = (pageNumber: number, attempt = 0) => {
     if (!numPages) return;
 
@@ -170,23 +169,21 @@ export default function PdfViewer({ fileName, citation }: Props) {
     setCurrentPage((prev) => (prev === clamped ? prev : clamped));
   };
 
-  // When active citation changes, scroll to its page (after pages exist)
   useEffect(() => {
     if (!activeCitation || !numPages) return;
     scrollToPage(activeCitation.pageNumber);
   }, [activeCitation, numPages]);
 
-  // When zoom changes, keep the current page (or active citation) in view
+  // keep current / active citation page centred after zoom
   useEffect(() => {
     if (!numPages) return;
-
     const targetPage =
       activeCitation?.pageNumber != null
         ? activeCitation.pageNumber
         : currentPage;
     scrollToPage(targetPage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoomFactor]); // depend on zoom so it recentres after +/- clicks
+  }, [zoomFactor]);
 
   /* ---------- toolbar actions ---------- */
 
@@ -213,8 +210,8 @@ export default function PdfViewer({ fileName, citation }: Props) {
   };
 
   const shortFileName =
-    fileName && fileName.length > 40
-      ? "…" + fileName.slice(-40)
+    fileName && fileName.length > 60
+      ? "…" + fileName.slice(-60)
       : fileName || "";
 
   /* ---------- render ---------- */
@@ -228,7 +225,22 @@ export default function PdfViewer({ fileName, citation }: Props) {
         background: "#f0f0f0",
       }}
     >
-      {/* Toolbar – full width, top, white background */}
+      {/* Filename bar ABOVE toolbar */}
+      <div
+        style={{
+          flex: "0 0 auto",
+          width: "100%",
+          background: "#f7f7f7",
+          borderBottom: "1px solid #e0e0e0",
+          padding: "4px 16px",
+        }}
+      >
+        <div className="text-xs text-gray-700 truncate">
+          {shortFileName}
+        </div>
+      </div>
+
+      {/* Toolbar – full width, white, no gap below filename bar */}
       <div
         style={{
           flex: "0 0 auto",
@@ -239,38 +251,30 @@ export default function PdfViewer({ fileName, citation }: Props) {
         }}
       >
         <div className="flex items-center justify-between">
-          {/* LEFT: file name + page navigation */}
-          <div className="flex items-center gap-4 min-w-0">
-            {/* file name */}
-            <div className="text-xs text-gray-600 truncate max-w-[260px]">
-              {shortFileName}
-            </div>
-
-            {/* page nav */}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={goPrevPage}
-                disabled={!numPages || currentPage <= 1}
-                className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                ▲
-              </button>
-              <span className="text-xs">
-                {numPages ? currentPage : 0} / {numPages || 0}
-              </span>
-              <button
-                type="button"
-                onClick={goNextPage}
-                disabled={!numPages || currentPage >= numPages}
-                className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                ▼
-              </button>
-            </div>
+          {/* Page navigation (left) */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={goPrevPage}
+              disabled={!numPages || currentPage <= 1}
+              className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ▲
+            </button>
+            <span className="text-xs">
+              {numPages ? currentPage : 0} / {numPages || 0}
+            </span>
+            <button
+              type="button"
+              onClick={goNextPage}
+              disabled={!numPages || currentPage >= numPages}
+              className="border rounded px-2 py-1 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              ▼
+            </button>
           </div>
 
-          {/* CENTRE: Zoom controls */}
+          {/* Zoom controls (center) */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -291,7 +295,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
             </button>
           </div>
 
-          {/* RIGHT: Citation navigation */}
+          {/* Citation navigation (right) */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -329,7 +333,7 @@ export default function PdfViewer({ fileName, citation }: Props) {
         style={{
           flex: "1 1 auto",
           overflow: "auto",
-          padding: 20,
+          padding: "8px 20px 12px",
           scrollBehavior: "smooth",
         }}
       >
@@ -403,7 +407,7 @@ function PageView({
         }
       },
       {
-        root: null, // viewport
+        root: null,
         threshold: 0.1,
       }
     );
@@ -448,7 +452,7 @@ function PageView({
       }}
       style={{
         position: "relative",
-        margin: "16px auto",
+        margin: "0 auto 4px", // <- almost no gap between pages
         width: "fit-content",
         background: "#ffffff",
         boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
